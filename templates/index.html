@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SenseVoice Real-time ASR Demo</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            text-align: center;
+        }
+        #controls {
+            margin: 20px 0;
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            cursor: pointer;
+            margin: 0 10px;
+        }
+        #startBtn {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+        }
+        #stopBtn {
+            background-color: #f44336;
+            color: white;
+            border: none;
+            border-radius: 4px;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        #result {
+            margin-top: 20px;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            min-height: 100px;
+            text-align: left;
+            white-space: pre-wrap;
+            background-color: #f9f9f9;
+        }
+        .status {
+            color: #666;
+            font-size: 14px;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>SenseVoice Real-time ASR</h1>
+    
+    <div id="controls">
+        <button id="startBtn">Start Recording</button>
+        <button id="stopBtn" disabled>Stop Recording</button>
+    </div>
+
+    <div id="status" class="status">Ready</div>
+    <div id="result">Transcription will appear here...</div>
+
+    <script>
+        let socket;
+        let audioContext;
+        let processor;
+        let source;
+        let stream;
+
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const statusDiv = document.getElementById('status');
+        const resultDiv = document.getElementById('result');
+
+        startBtn.onclick = async () => {
+            try {
+                statusDiv.innerText = "Connecting...";
+                // Determine protocol (ws or wss)
+                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                socket = new WebSocket(`${protocol}//${window.location.host}/ws/asr`);
+                
+                socket.onopen = async () => {
+                    statusDiv.innerText = "Connected. Requesting microphone access...";
+                    try {
+                        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                        
+                        // Create AudioContext with 16k sample rate
+                        audioContext = new AudioContext({ sampleRate: 16000 });
+                        source = audioContext.createMediaStreamSource(stream);
+                        
+                        // Use ScriptProcessor for raw audio data
+                        // bufferSize: 4096 (approx 250ms at 16k)
+                        processor = audioContext.createScriptProcessor(4096, 1, 1);
+
+                        source.connect(processor);
+                        processor.connect(audioContext.destination);
+
+                        processor.onaudioprocess = (e) => {
+                            if (socket.readyState === WebSocket.OPEN) {
+                                const inputData = e.inputBuffer.getChannelData(0);
+                                // Convert float32 to int16
+                                const buffer = new ArrayBuffer(inputData.length * 2);
+                                const view = new DataView(buffer);
+                                for (let i = 0; i < inputData.length; i++) {
+                                    let s = Math.max(-1, Math.min(1, inputData[i]));
+                                    // Convert to 16-bit PCM
+                                    view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+                                }
+                                socket.send(buffer);
+                            }
+                        };
+
+                        statusDiv.innerText = "Recording...";
+                        startBtn.disabled = true;
+                        stopBtn.disabled = false;
+                        resultDiv.innerText = "";
+                    } catch (err) {
+                        console.error("Error accessing microphone:", err);
+                        statusDiv.innerText = "Error accessing microphone: " + err.message;
+                        socket.close();
+                    }
+                };
+
+                socket.onmessage = (event) => {
+                    const data = JSON.parse(event.data);
+                    if (data.text) {
+                        resultDiv.innerText = data.text;
+                    }
+                };
+
+                socket.onclose = () => {
+                    resetUI();
+                };
+
+                socket.onerror = (error) => {
+                    console.error("WebSocket error:", error);
+                    statusDiv.innerText = "WebSocket error";
+                };
+
+            } catch (err) {
+                console.error("Error:", err);
+                statusDiv.innerText = "Error: " + err.message;
+            }
+        };
+
+        stopBtn.onclick = () => {
+            if (socket) {
+                socket.close();
+            }
+            stopRecording();
+        };
+
+        function stopRecording() {
+            if (source) {
+                source.disconnect();
+                source = null;
+            }
+            if (processor) {
+                processor.disconnect();
+                processor = null;
+            }
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+                stream = null;
+            }
+            if (audioContext) {
+                audioContext.close();
+                audioContext = null;
+            }
+        }
+
+        function resetUI() {
+            statusDiv.innerText = "Disconnected";
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+            stopRecording();
+        }
+    </script>
+</body>
+</html>

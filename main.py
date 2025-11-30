@@ -1,5 +1,5 @@
 def main():
-    print("Hello from asr!")
+    print("Hello from sensevoice!")
 
 
 if __name__ == "__main__":
