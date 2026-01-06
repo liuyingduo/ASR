@@ -79,6 +79,18 @@
 
         startBtn.onclick = async () => {
             try {
+                // 检查是否支持 getUserMedia（需要 HTTPS 或 localhost）
+                if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                    const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+                    if (!isLocalhost && window.location.protocol !== 'https:') {
+                        statusDiv.innerText = "错误：麦克风访问需要 HTTPS 或 localhost。请使用 http://localhost 访问，或部署 HTTPS。";
+                        alert("浏览器安全限制：麦克风功能需要通过 https:// 或 http://localhost 访问。\n\n当前地址: " + window.location.href + "\n\n请改用 http://localhost:端口号 访问。");
+                        return;
+                    }
+                    statusDiv.innerText = "错误：您的浏览器不支持麦克风访问";
+                    return;
+                }
+
                 statusDiv.innerText = "Connecting...";
                 // Determine protocol (ws or wss)
                 const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';

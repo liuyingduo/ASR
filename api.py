@@ -63,12 +63,21 @@ async def demo_page():
 @app.websocket("/ws/asr")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    audio_buffer = []
-    
+
+    # Double buffer strategy
+    # All audio is concatenated, with a boundary index tracking confirmed vs pending
+    full_audio_buffer = []  # List of audio chunks
+    confirmed_samples = 0   # Number of confirmed audio samples (boundary)
+    confirmed_text = ""     # Confirmed text result
+
     # Parameters for inference frequency
     chunk_count = 0
-    inference_interval = 4 # Run inference every 4 chunks (approx 1 sec)
-    
+    inference_interval = 4  # Run inference every 4 chunks (approx 1 sec)
+
+    # Window settings
+    pending_window = 5  # Keep last 5 seconds as pending (can be modified)
+    confirm_threshold = int(pending_window * TARGET_FS)  # Convert to samples
+
     try:
         while True:
             data = await websocket.receive_bytes()
@@ -76,39 +85,91 @@ async def websocket_endpoint(websocket: WebSocket):
             audio_chunk = np.frombuffer(data, dtype=np.int16)
             # Convert to float32 and normalize
             audio_float = audio_chunk.astype(np.float32) / 32768.0
-            audio_buffer.append(audio_float)
-            
+
+            # Add to buffer
+            full_audio_buffer.append(audio_float)
+
             chunk_count += 1
-            
+
             if chunk_count % inference_interval == 0:
-                # Concatenate all chunks
-                full_audio = np.concatenate(audio_buffer)
-                # Convert to tensor
-                audio_tensor = torch.from_numpy(full_audio)
-                
-                # Run inference
-                # m.inference expects a list of tensors
-                res = m.inference(
-                    data_in=[audio_tensor],
-                    language="auto",
-                    use_itn=True,
-                    ban_emo_unk=False,
-                    fs=TARGET_FS,
-                    **kwargs,
-                )
-                
-                if len(res) > 0 and len(res[0]) > 0:
-                    text = res[0][0]["text"]
-                    # Clean text
-                    clean_text = re.sub(regex, "", text, 0, re.MULTILINE)
-                    clean_text = rich_transcription_postprocess(clean_text)
-                    
-                    await websocket.send_json({"text": clean_text})
-                    
+                # Concatenate all audio
+                full_audio = np.concatenate(full_audio_buffer)
+                total_samples = len(full_audio)
+
+                # If total audio exceeds threshold, update confirmed boundary
+                if total_samples > confirm_threshold:
+                    confirmed_samples = total_samples - confirm_threshold
+
+                    # Extract confirmed portion and update text
+                    confirmed_audio = full_audio[:confirmed_samples]
+                    confirmed_tensor = torch.from_numpy(confirmed_audio)
+
+                    res = m.inference(
+                        data_in=[confirmed_tensor],
+                        language="auto",
+                        use_itn=True,
+                        ban_emo_unk=False,
+                        fs=TARGET_FS,
+                        **kwargs,
+                    )
+
+                    if len(res) > 0 and len(res[0]) > 0:
+                        confirmed_text = re.sub(regex, res[0][0]["text"], 0, re.MULTILINE)
+                        confirmed_text = rich_transcription_postprocess(confirmed_text)
+
+                # Extract pending portion (from confirmed_samples to end)
+                if total_samples > confirmed_samples:
+                    pending_audio = full_audio[confirmed_samples:]
+                    pending_tensor = torch.from_numpy(pending_audio)
+
+                    # Run inference on pending buffer only
+                    res = m.inference(
+                        data_in=[pending_tensor],
+                        language="auto",
+                        use_itn=True,
+                        ban_emo_unk=False,
+                        fs=TARGET_FS,
+                        **kwargs,
+                    )
+
+                    if len(res) > 0 and len(res[0]) > 0:
+                        pending_text = res[0][0]["text"]
+                        # Clean text
+                        pending_text = re.sub(regex, "", pending_text, 0, re.MULTILINE)
+                        pending_text = rich_transcription_postprocess(pending_text)
+
+                        await websocket.send_json({
+                            "confirmed_text": confirmed_text,
+                            "pending_text": pending_text,
+                            "is_final": False
+                        })
+
     except WebSocketDisconnect:
-        pass
+        # On disconnect, finalize all pending audio
+        if full_audio_buffer:
+            full_audio = np.concatenate(full_audio_buffer)
+            full_tensor = torch.from_numpy(full_audio)
+            res = m.inference(
+                data_in=[full_tensor],
+                language="auto",
+                use_itn=True,
+                ban_emo_unk=False,
+                fs=TARGET_FS,
+                **kwargs,
+            )
+
+            if len(res) > 0 and len(res[0]) > 0:
+                final_text = re.sub(regex, res[0][0]["text"], 0, re.MULTILINE)
+                final_text = rich_transcription_postprocess(final_text)
+                await websocket.send_json({
+                    "confirmed_text": final_text,
+                    "pending_text": "",
+                    "is_final": True
+                })
     except Exception as e:
         print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
         try:
             await websocket.close()
         except:
@@ -163,4 +224,4 @@ async def turn_audio_to_text(
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=50109)
+    uvicorn.run(app, host="0.0.0.0", port=50000)
