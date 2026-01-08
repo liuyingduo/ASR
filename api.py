@@ -114,7 +114,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     )
 
                     if len(res) > 0 and len(res[0]) > 0:
-                        confirmed_text = re.sub(regex, res[0][0]["text"], 0, re.MULTILINE)
+                        confirmed_text = re.sub(regex, "", res[0][0]["text"], 0, re.MULTILINE)
                         confirmed_text = rich_transcription_postprocess(confirmed_text)
 
                 # Extract pending portion (from confirmed_samples to end)
@@ -159,7 +159,7 @@ async def websocket_endpoint(websocket: WebSocket):
             )
 
             if len(res) > 0 and len(res[0]) > 0:
-                final_text = re.sub(regex, res[0][0]["text"], 0, re.MULTILINE)
+                final_text = re.sub(regex, "", res[0][0]["text"], 0, re.MULTILINE)
                 final_text = rich_transcription_postprocess(final_text)
                 await websocket.send_json({
                     "confirmed_text": final_text,
