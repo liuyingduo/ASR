@@ -140,7 +140,14 @@
 
                 socket.onmessage = (event) => {
                     const data = JSON.parse(event.data);
-                    if (data.text) {
+                    // 后端返回 confirmed_text 和 pending_text
+                    if (data.confirmed_text !== undefined || data.pending_text !== undefined) {
+                        const confirmed = data.confirmed_text || "";
+                        const pending = data.pending_text || "";
+                        // 显示确认文本（黑色）+ 待定文本（灰色）
+                        resultDiv.innerHTML = `<span style="color: black;">${confirmed}</span><span style="color: gray;">${pending}</span>`;
+                    } else if (data.text) {
+                        // 兼容旧格式
                         resultDiv.innerText = data.text;
                     }
                 };
