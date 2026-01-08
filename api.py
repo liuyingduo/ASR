@@ -67,7 +67,16 @@ async def websocket_endpoint(websocket: WebSocket):
     
     # Parameters for inference frequency
     chunk_count = 0
-    inference_interval = 4 # Run inference every 4 chunks (approx 1 sec)
+    inference_interval = 4  # Run inference every 4 chunks (approx 1 sec)
+    
+    # 滑动窗口参数
+    max_window_chunks = 40  # 最大窗口大小（约10秒音频）
+    lock_threshold = 24     # 当超过此数量时，锁定前面的识别结果（约6秒）
+    
+    # 已锁定的文本（不再修改）
+    locked_text = ""
+    # 当前窗口的起始位置
+    window_start = 0
     
     try:
         while True:
@@ -81,29 +90,65 @@ async def websocket_endpoint(websocket: WebSocket):
             chunk_count += 1
             
             if chunk_count % inference_interval == 0:
-                # Concatenate all chunks
-                full_audio = np.concatenate(audio_buffer)
-                # Convert to tensor
-                audio_tensor = torch.from_numpy(full_audio)
+                current_buffer_len = len(audio_buffer)
                 
-                # Run inference
-                # m.inference expects a list of tensors
-                res = m.inference(
-                    data_in=[audio_tensor],
-                    language="auto",
-                    use_itn=True,
-                    ban_emo_unk=False,
-                    fs=TARGET_FS,
-                    **kwargs,
-                )
-                
-                if len(res) > 0 and len(res[0]) > 0:
-                    text = res[0][0]["text"]
-                    # Clean text
-                    clean_text = re.sub(regex, "", text, 0, re.MULTILINE)
-                    clean_text = rich_transcription_postprocess(clean_text)
+                # 如果buffer超过最大窗口大小，需要锁定前面的部分
+                if current_buffer_len > max_window_chunks:
+                    # 计算需要锁定的音频块数量
+                    chunks_to_lock = current_buffer_len - lock_threshold
                     
-                    await websocket.send_json({"text": clean_text})
+                    # 对需要锁定的部分进行推理
+                    lock_audio = np.concatenate(audio_buffer[:chunks_to_lock])
+                    lock_tensor = torch.from_numpy(lock_audio)
+                    
+                    lock_res = m.inference(
+                        data_in=[lock_tensor],
+                        language="auto",
+                        use_itn=True,
+                        ban_emo_unk=False,
+                        fs=TARGET_FS,
+                        **kwargs,
+                    )
+                    
+                    if len(lock_res) > 0 and len(lock_res[0]) > 0:
+                        lock_text = lock_res[0][0]["text"]
+                        lock_text = re.sub(regex, "", lock_text, 0, re.MULTILINE)
+                        lock_text = rich_transcription_postprocess(lock_text)
+                        # 将这部分文本锁定
+                        locked_text += lock_text
+                    
+                    # 移除已锁定的音频块
+                    audio_buffer = audio_buffer[chunks_to_lock:]
+                    window_start += chunks_to_lock
+                
+                # 对当前窗口内的音频进行推理
+                if len(audio_buffer) > 0:
+                    window_audio = np.concatenate(audio_buffer)
+                    audio_tensor = torch.from_numpy(window_audio)
+                    
+                    res = m.inference(
+                        data_in=[audio_tensor],
+                        language="auto",
+                        use_itn=True,
+                        ban_emo_unk=False,
+                        fs=TARGET_FS,
+                        **kwargs,
+                    )
+                    
+                    current_text = ""
+                    if len(res) > 0 and len(res[0]) > 0:
+                        text = res[0][0]["text"]
+                        current_text = re.sub(regex, "", text, 0, re.MULTILINE)
+                        current_text = rich_transcription_postprocess(current_text)
+                    
+                    # 组合已锁定文本和当前窗口文本
+                    full_text = locked_text + current_text
+                    
+                    await websocket.send_json({
+                        "text": full_text,
+                        "locked": locked_text,      # 已确认不会再变的文本
+                        "pending": current_text     # 当前窗口内可能还会变化的文本
+                    })
                     
     except WebSocketDisconnect:
         pass
