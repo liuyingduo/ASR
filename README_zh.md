@@ -403,3 +403,45 @@ python webui.py
 |                          FunASR                          |
 |:--------------------------------------------------------:|
 | <img src="image/dingding_funasr.png" width="250"/></div> |
+
+## 在问服务器中部署流程
+1. 创建启动脚本
+bash
+nano ~/start_asr.sh
+2. 添加内容：
+bash
+#!/bin/bash
+cd /home/zhipeng/ASR
+source .venv/bin/activate
+export SENSEVOICE_DEVICE=cuda:1
+# 使用nohup在后台运行，并重定向日志
+nohup python api.py > asr.log 2>&1 &
+echo $! > asr.pid
+echo "ASR服务已启动，PID: $(cat asr.pid)"
+echo "查看日志: tail -f asr.log"
+3. 创建停止脚本
+bash
+nano ~/stop_asr.sh
+bash
+#!/bin/bash
+if [ -f ~/ASR/asr.pid ]; then
+    pid=$(cat ~/ASR/asr.pid)
+    kill $pid
+    echo "已停止ASR服务 (PID: $pid)"
+    rm ~/ASR/asr.pid
+else
+    echo "未找到运行的ASR服务"
+fi
+4. 给脚本执行权限
+bash
+chmod +x ~/start_asr.sh ~/stop_asr.sh
+5. 使用脚本
+bash
+# 启动服务
+~/start_asr.sh
+
+# 查看日志
+tail -f ~/ASR/asr.log
+
+# 停止服务
+~/stop_asr.sh
